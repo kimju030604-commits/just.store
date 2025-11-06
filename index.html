@@ -1,0 +1,510 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>The Online Market</title>
+    <!-- Load Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Load Inter Font -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
+    <!-- Load QRious for QR Code generation -->
+    <script src="https://cdn.jsdelivr.net/npm/qrious@4.0.2/dist/qrious.min.js"></script>
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #f8fafc; /* Slate-50 */
+        }
+    </style>
+</head>
+<body class="min-h-screen flex flex-col">
+
+    <!-- Main Application Container -->
+    <div id="app" class="flex flex-col flex-grow">
+        <!-- Header -->
+        <header class="bg-white shadow-lg sticky top-0 z-10">
+            <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4 flex justify-between items-center">
+                <h1 class="text-3xl font-bold text-gray-900 tracking-tight">Just Store</h1>
+                <div class="flex items-center space-x-4">
+                    <button id="cart-button" class="relative p-2 rounded-full bg-indigo-600 text-white hover:bg-indigo-700 transition duration-150 ease-in-out shadow-md" onclick="app.openCheckout()">
+                        <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 3h2l.4 2M7 13h10l4-8H5.4M7 13L5.4 5M7 13l-2.293 2.293c-.63.63-.184 1.707.707 1.707H17m0 0a2 2 0 100 4 2 2 0 000-4zm-8 2a2 2 0 11-4 0 2 2 0 014 0z" />
+                        </svg>
+                        <span id="cart-count" class="absolute top-0 right-0 inline-flex items-center justify-center px-2 py-1 text-xs font-bold leading-none text-red-100 transform translate-x-1/2 -translate-y-1/2 bg-red-600 rounded-full">0</span>
+                    </button>
+                    <span id="user-info" class="text-sm text-gray-600"> Users</span>
+                </div>
+            </div>
+        </header>
+
+        <!-- Main Content Area -->
+        <main class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 flex-grow">
+            <!-- Product List View -->
+            <section id="products-view" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6"></section>
+
+            <!-- Checkout/Payment Modal (Initially Hidden) -->
+            <div id="modal-container" class="fixed inset-0 bg-gray-900 bg-opacity-75 z-20 hidden items-center justify-center p-4" onclick="app.closeModal(event)">
+                <div id="modal-content" class="bg-white rounded-xl shadow-2xl w-full max-w-lg transition-all transform overflow-hidden" onclick="event.stopPropagation()">
+                    <!-- Content will be injected here (Checkout or Payment) -->
+                </div>
+            </div>
+
+             <!-- Notification Message Box -->
+            <div id="notification-box" class="fixed bottom-4 right-4 z-30 space-y-2">
+                <!-- Notifications will be injected here -->
+            </div>
+        </main>
+
+    </div>
+
+    <script type="module">
+        // Import Firebase SDKs
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, doc, getDoc, addDoc, setDoc, onSnapshot, collection, query, where, getDocs, serverTimestamp, setLogLevel } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        // Global variables provided by the environment
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+        const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
+        const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+
+        // Initialize Firebase
+        let appInstance, db, auth;
+        let userId = null;
+        let isAuthReady = false;
+
+        // Set Firebase logging level to debug
+        setLogLevel('debug');
+
+        // Application State
+        const state = {
+            products: [
+                { id: 1, name: "អាវHoodie", price: 15.00, image: "images/Hoodie.jpg", desc: "ជម្រើសដ៌សាកសមបំផុតសម្រាប់យុវវ័យសម័យថ្មី" },
+                { id: 2, name: "អាវJacket", price: 8.50, image: "images/Jacket.jpg", desc: "មានច្រើនជម្រើស ស្អាត, ថ្លៃថ្នូរ, ទាន់សម័យ." },
+                { id: 3, name: "ខោខូវប៉ូយ", price: 6.25, image: "images/Jean.jpg", desc: "ស្អាតដូចក្នុងរូប." },
+                { id: 4, name: "ស្បែកជើង Jordan-1-Low-Paris", price: 124.99, image: "images/Jordan-1-Low-Paris.jpg", desc: "យុវវ័យទាន់សម័យ." }
+            ],
+            cart: [], // { productId: 1, quantity: 1 }
+            cartItems: [], // Populated with product details
+            currentView: 'products', // 'products', 'checkout', 'payment'
+            orderId: null,
+            totalAmount: 0,
+        };
+
+        // --- Core Utility Functions ---
+
+        /**
+         * Finds a product by its ID.
+         * @param {number} id
+         * @returns {object|undefined}
+         */
+        function getProductById(id) {
+            return state.products.find(p => p.id === id);
+        }
+
+        /**
+         * Calculates the total cost of the items in the cart.
+         * @returns {number}
+         */
+        function calculateTotal() {
+            return state.cartItems.reduce((sum, item) => sum + (item.price * item.quantity), 0);
+        }
+
+        /**
+         * Displays a temporary notification message.
+         * @param {string} message - The message to display.
+         * @param {string} type - 'success' or 'error'.
+         */
+        function showNotification(message, type = 'success') {
+            const box = document.getElementById('notification-box');
+            const color = type === 'success' ? 'bg-green-500' : 'bg-red-500';
+
+            const notification = document.createElement('div');
+            notification.className = `p-3 rounded-lg shadow-lg text-white font-medium ${color} transition-opacity duration-300 ease-in-out`;
+            notification.textContent = message;
+
+            box.appendChild(notification);
+
+            // Automatically remove after 3 seconds
+            setTimeout(() => {
+                notification.classList.add('opacity-0');
+                notification.addEventListener('transitionend', () => notification.remove());
+            }, 3000);
+        }
+
+        // --- Rendering Functions ---
+
+        /**
+         * Renders the current state of the cart count and items.
+         */
+        function renderCart() {
+            // Update cart count badge
+            const cartCount = state.cart.reduce((sum, item) => sum + item.quantity, 0);
+            document.getElementById('cart-count').textContent = cartCount;
+
+            // Populate cartItems with full product details
+            state.cartItems = state.cart.map(cartItem => {
+                const product = getProductById(cartItem.productId);
+                return { ...product, quantity: cartItem.quantity };
+            }).filter(item => item.id); // Filter out any missing products
+        }
+
+        /**
+         * Renders the product list view.
+         */
+        function renderProducts() {
+            const container = document.getElementById('products-view');
+            container.innerHTML = state.products.map(product => `
+                <div class="bg-white rounded-xl shadow-lg hover:shadow-xl transition duration-300 overflow-hidden flex flex-col">
+                    <img src="${product.image}" alt="${product.name}" class="w-full h-48 object-cover object-center">
+                    <div class="p-5 flex flex-col flex-grow">
+                        <h3 class="text-xl font-semibold text-gray-800">${product.name}</h3>
+                        <p class="text-sm text-gray-500 mt-1 flex-grow">${product.desc}</p>
+                        <div class="flex justify-between items-center mt-4 pt-2 border-t border-gray-100">
+                            <span class="text-2xl font-bold text-indigo-600">$${product.price.toFixed(2)}</span>
+                            <button onclick="app.addToCart(${product.id})" class="flex items-center space-x-2 px-4 py-2 bg-indigo-600 text-white text-sm font-medium rounded-lg shadow-md hover:bg-indigo-700 transition duration-150">
+                                <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
+                                    <path fill-rule="evenodd" d="M10 5a1 1 0 011 1v3h3a1 1 0 110 2h-3v3a1 1 0 11-2 0v-3H6a1 1 0 110-2h3V6a1 1 0 011-1z" clip-rule="evenodd" />
+                                </svg>
+                                <span>Add</span>
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            `).join('');
+            document.getElementById('products-view').classList.remove('hidden');
+        }
+
+        /**
+         * Renders the Checkout Modal.
+         */
+        function renderCheckoutModal() {
+            const total = calculateTotal();
+            const itemsList = state.cartItems.length > 0 ? state.cartItems.map(item => `
+                <div class="flex justify-between items-center py-2 border-b border-gray-100 last:border-b-0">
+                    <div class="flex items-center flex-grow">
+                        <span class="text-gray-900 font-medium">${item.name}</span>
+                        <span class="ml-2 text-sm text-gray-500">x${item.quantity}</span>
+                    </div>
+                    <div class="flex items-center space-x-3">
+                        <span class="font-semibold text-gray-700">$${(item.price * item.quantity).toFixed(2)}</span>
+                        <button onclick="app.removeFromCart(${item.id})" class="text-red-500 hover:text-red-700 text-sm font-medium transition duration-150">
+                            Remove
+                        </button>
+                    </div>
+                </div>
+            `).join('') : '<p class="text-center text-gray-500 py-4">Your cart is empty.</p>';
+
+            const modalContent = `
+                <div class="p-6">
+                    <h2 class="text-3xl font-bold text-gray-800 mb-6 border-b pb-3 flex justify-between items-center">
+                        Shopping Cart
+                        <button onclick="app.closeModal()" class="text-gray-400 hover:text-gray-600 transition duration-150">
+                            <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" /></svg>
+                        </button>
+                    </h2>
+                    <div class="max-h-80 overflow-y-auto pr-2">
+                        ${itemsList}
+                    </div>
+                    <div class="mt-6 pt-4 border-t border-gray-200">
+                        <div class="flex justify-between items-center text-2xl font-bold text-gray-900">
+                            <span>Total</span>
+                            <span>$${total.toFixed(2)}</span>
+                        </div>
+                        <button ${state.cart.length === 0 ? 'disabled' : ''} onclick="app.startPayment()" class="w-full mt-6 py-3 bg-indigo-600 text-white text-lg font-semibold rounded-lg shadow-xl hover:bg-indigo-700 transition duration-150 disabled:bg-indigo-400">
+                            Proceed to Bakong QR Payment
+                        </button>
+                    </div>
+                </div>
+            `;
+            document.getElementById('modal-content').innerHTML = modalContent;
+        }
+
+        /**
+         * Renders the Payment QR Code Modal.
+         */
+        function renderPaymentModal() {
+            const total = calculateTotal();
+            const transactionId = `ORD-${Date.now()}`;
+            state.orderId = transactionId;
+            state.totalAmount = total;
+
+            const modalContent = `
+                <div class="p-6">
+                    <h2 class="text-3xl font-bold text-gray-800 mb-6 border-b pb-3 text-center">
+                        Complete Payment
+                    </h2>
+
+                    <div class="flex flex-col items-center">
+                        <p class="text-2xl font-bold text-indigo-600 mb-4">Total Due: $${total.toFixed(2)}</p>
+
+                        <div id="qrcode-canvas-container" class="p-3 bg-white border border-gray-200 rounded-lg shadow-md">
+                            <canvas id="qrcode-canvas" class="w-48 h-48 sm:w-64 sm:h-64"></canvas>
+                        </div>
+
+                        <p class="text-sm text-gray-500 mt-4 text-center">
+                            <strong>Transaction ID:</strong> ${transactionId}
+                        </p>
+
+                        <div class="bg-yellow-50 border-l-4 border-yellow-400 p-4 mt-6 rounded-lg">
+                            <p class="font-semibold text-yellow-800">Mock Payment Instructions:</p>
+                            <p class="text-yellow-700 text-sm mt-1">
+                                In a real online store, this QR code would contain a link to your Bakong or bank payment gateway, automatically including the amount ($${total.toFixed(2)}) and Transaction ID (${transactionId}).
+                                Scan this code with your mobile banking app to simulate the payment transfer.
+                            </p>
+                        </div>
+
+                        <button onclick="app.completeOrder()" class="w-full mt-6 py-3 bg-green-600 text-white text-lg font-semibold rounded-lg shadow-xl hover:bg-green-700 transition duration-150">
+                            I Have Paid (Confirm Order)
+                        </button>
+                        <button onclick="app.closeModal()" class="w-full mt-3 py-3 text-gray-600 hover:text-gray-800 transition duration-150 text-sm">
+                            Cancel and Return to Store
+                        </button>
+                    </div>
+                </div>
+            `;
+            document.getElementById('modal-content').innerHTML = modalContent;
+
+            // Generate QR Code after rendering the modal
+            setTimeout(() => {
+                app.generateQrCode(transactionId, total);
+                // After rendering the payment modal, save the pending order
+                app.saveOrderToFirestore('Pending', transactionId, total);
+            }, 50); // Small delay to ensure canvas is in the DOM
+        }
+
+        // --- State Manipulation & User Actions ---
+
+        window.app = {
+            /**
+             * Adds a product to the cart or increments its quantity.
+             * @param {number} productId
+             */
+            addToCart(productId) {
+                const existingItem = state.cart.find(item => item.productId === productId);
+                if (existingItem) {
+                    existingItem.quantity += 1;
+                } else {
+                    state.cart.push({ productId: productId, quantity: 1 });
+                }
+                renderCart();
+                showNotification(getProductById(productId).name + " added to cart!");
+            },
+
+            /**
+             * Removes an item completely from the cart.
+             * @param {number} productId
+             */
+            removeFromCart(productId) {
+                state.cart = state.cart.filter(item => item.productId !== productId);
+                renderCart();
+                renderCheckoutModal(); // Re-render the open modal
+                showNotification("Item removed from cart.", 'error');
+            },
+
+            /**
+             * Opens the checkout modal view.
+             */
+            openCheckout() {
+                if (state.cart.length === 0) {
+                    showNotification("Your cart is empty. Add products first!", 'error');
+                    return;
+                }
+                state.currentView = 'checkout';
+                renderCheckoutModal();
+                document.getElementById('modal-container').classList.remove('hidden');
+                document.getElementById('modal-container').classList.add('flex');
+            },
+
+            /**
+             * Starts the payment process (shows the QR code modal).
+             */
+            startPayment() {
+                if (calculateTotal() === 0) {
+                    showNotification("Cannot start payment with an empty cart.", 'error');
+                    return;
+                }
+                state.currentView = 'payment';
+                renderPaymentModal();
+            },
+
+            /**
+             * Clears cart and notifies user of successful order.
+             */
+            completeOrder() {
+                // In a real app, this would check the bank for confirmation.
+                // Here, we update the status from 'Pending' to 'Complete'.
+                this.updateOrderStatus('Completed', state.orderId)
+                    .then(() => {
+                        state.cart = [];
+                        state.cartItems = [];
+                        state.orderId = null;
+                        state.totalAmount = 0;
+                        renderCart();
+                        this.closeModal();
+                        showNotification("Order confirmed! Thank you for your purchase.", 'success');
+                    })
+                    .catch(e => {
+                        console.error("Error completing order:", e);
+                        showNotification("Error confirming order. Please try again.", 'error');
+                    });
+            },
+
+            /**
+             * Closes the current modal view.
+             * @param {Event} event - The click event.
+             */
+            closeModal(event) {
+                if (event && event.target.id !== 'modal-container') return;
+                state.currentView = 'products';
+                document.getElementById('modal-container').classList.add('hidden');
+                document.getElementById('modal-container').classList.remove('flex');
+            },
+
+            /**
+             * Generates the QR code based on transaction details.
+             * This uses the qrious library loaded from CDN.
+             * @param {string} txId - Transaction ID.
+             * @param {number} amount - Total payment amount.
+             */
+            generateQrCode(txId, amount) {
+                const canvas = document.getElementById('qrcode-canvas');
+                if (!canvas) return;
+
+                // Mock data structure for the QR code payload (often a URL or JSON string)
+                const payload = JSON.stringify({
+                    paymentType: 'Bakong_Mock',
+                    storeId: appId,
+                    transactionId: txId,
+                    amount: amount.toFixed(2),
+                    currency: 'USD'
+                });
+
+                // Create and draw the QR code using QRious
+                new QRious({
+                    element: canvas,
+                    value: payload,
+                    size: canvas.width,
+                    level: 'H'
+                });
+            },
+
+            // --- Firestore Operations ---
+
+            /**
+             * Saves a new order to Firestore in the user's private collection.
+             * @param {string} status - Initial status (e.g., 'Pending', 'Completed').
+             * @param {string} orderId - Unique transaction ID.
+             * @param {number} total - Total amount.
+             */
+            async saveOrderToFirestore(status, orderId, total) {
+                if (!db || !userId) {
+                    showNotification("Database not ready. Cannot save order.", 'error');
+                    return;
+                }
+
+                const orderRef = doc(db, 'artifacts', appId, 'users', userId, 'orders', orderId);
+
+                const orderData = {
+                    items: state.cartItems.map(item => ({
+                        id: item.id,
+                        name: item.name,
+                        quantity: item.quantity,
+                        price: item.price
+                    })),
+                    totalAmount: total,
+                    status: status,
+                    createdAt: serverTimestamp(),
+                    updatedAt: serverTimestamp(),
+                    paymentMethod: 'Bakong_QR_Mock'
+                };
+
+                try {
+                    await setDoc(orderRef, orderData);
+                    console.log(`Order ${orderId} saved as ${status}.`);
+                    if (status === 'Pending') {
+                        showNotification(`Order ID ${orderId} created and awaiting payment confirmation.`, 'success');
+                    }
+                } catch (e) {
+                    console.error("Error saving document: ", e);
+                    showNotification("Failed to save order to database.", 'error');
+                }
+            },
+
+             /**
+             * Updates the status of an existing order.
+             * @param {string} status - New status (e.g., 'Completed', 'Failed').
+             * @param {string} orderId - Unique transaction ID.
+             */
+            async updateOrderStatus(status, orderId) {
+                if (!db || !userId) return;
+
+                const orderRef = doc(db, 'artifacts', appId, 'users', userId, 'orders', orderId);
+                try {
+                    await setDoc(orderRef, { status: status, updatedAt: serverTimestamp() }, { merge: true });
+                    console.log(`Order ${orderId} status updated to ${status}.`);
+                } catch (e) {
+                    console.error("Error updating document: ", e);
+                }
+            }
+        };
+
+        // --- Firebase Initialization & Authentication ---
+
+        async function initFirebase() {
+            try {
+                if (Object.keys(firebaseConfig).length === 0) {
+                    console.error("Firebase config is missing.");
+                    return;
+                }
+                appInstance = initializeApp(firebaseConfig);
+                db = getFirestore(appInstance);
+                auth = getAuth(appInstance);
+
+                // Set up auth state observer
+                onAuthStateChanged(auth, async (user) => {
+                    if (user) {
+                        userId = user.uid;
+                    } else {
+                        // Attempt sign in with custom token or anonymously
+                        if (initialAuthToken) {
+                            await signInWithCustomToken(auth, initialAuthToken);
+                        } else {
+                            await signInAnonymously(auth);
+                        }
+                    }
+                    isAuthReady = true;
+                    renderUserInfo();
+                });
+            } catch (e) {
+                console.error("Firebase initialization failed:", e);
+                document.getElementById('user-info').textContent = 'Auth Error';
+            }
+        }
+
+        function renderUserInfo() {
+            const userInfoElement = document.getElementById('user-info');
+            if (userId) {
+                userInfoElement.innerHTML = `<span class="font-mono text-xs p-1 bg-gray-100 rounded">User ID: ${userId}</span>`;
+            } else {
+                userInfoElement.textContent = 'Authenticating...';
+            }
+        }
+
+
+        // --- Application Start ---
+        window.onload = function() {
+            initFirebase().then(() => {
+                // Start the main view rendering
+                renderProducts();
+                renderCart();
+            });
+        };
+    </script>
+</body>
+<footer>
+<center>
+<h4> Enjoy your stuffs, come back later. Spray loves for you all.</h4>
+</center>
+</footer>
+</html>
